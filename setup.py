@@ -20,6 +20,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'ransac_node = ransac_seg.ransac_node:main',
         ],
     },
 )
