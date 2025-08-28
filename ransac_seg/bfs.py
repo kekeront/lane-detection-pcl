@@ -6,6 +6,7 @@ from visualization_msgs.msg import Marker
 from sensor_msgs_py import point_cloud2
 import numpy as np
 from geometry_msgs.msg import Point
+from collections import deque
 
 
 def ros_to_numpy(msg):
@@ -20,7 +21,7 @@ class RoadSquares(Node):
     def __init__(self):
         super().__init__("road_squares_node")
 
-        # Subscribe to LiDAR raw topic
+        # Subscribe to LiDAR topic
         self.create_subscription(
             PointCloud2,
             "/sensor/lidar_front/points",
@@ -28,51 +29,73 @@ class RoadSquares(Node):
             10
         )
 
-        # Publish semantic squares (as visualization markers)
+        # Publisher for semantic squares
         self.pub = self.create_publisher(Marker, "/semantic_map/squares", 10)
+
+        self.square_size = 0.5
+        self.half_size = self.square_size / 2.0
+
+    def bfs_connected(self, grid, root):
+        """Return connected set of squares starting from root."""
+        visited = set()
+        q = deque([root])
+        visited.add(root)
+
+        while q:
+            cx, cy = q.popleft()
+            # 4-neighbors (N,S,E,W). Use 8-neighbors if needed
+            for dx, dy in [(1,0), (-1,0), (0,1), (0,-1)]:
+                n = (cx+dx, cy+dy)
+                if n in grid and n not in visited:
+                    visited.add(n)
+                    q.append(n)
+        return visited
 
     def callback(self, msg: PointCloud2):
         pts = ros_to_numpy(msg)
         if pts.shape[0] == 0:
             return
 
-        # ✅ TODO: Apply your existing RANSAC road segmentation here
-        # For now, I assume you already have road vs obstacle classification
-        # Let's take a simple filter (ground plane / road_surface)
-        road_pts = pts[pts[:,2] < 0.2]   # crude filter by z (replace with your RANSAC output)
+        # Example: crude road filter (replace with your RANSAC classification)
+        road_pts = pts[pts[:,2] < 0.2]
 
-        # Grid parameters
-        square_size = 0.5   # size of each square in meters
-        half_size = square_size / 2.0
-
-        # Quantize road points into grid cells
+        # Quantize into grid cells
         grid = set()
         for x, y, _ in road_pts:
-            gx = int(x // square_size)
-            gy = int(y // square_size)
+            gx = int(x // self.square_size)
+            gy = int(y // self.square_size)
             grid.add((gx, gy))
 
-        # Publish one big marker with all squares
+        if not grid:
+            return
+
+        # Root = closest grid cell to LiDAR (0,0)
+        root = min(grid, key=lambda g: g[0]**2 + g[1]**2)
+
+        # BFS filter
+        connected = self.bfs_connected(grid, root)
+
+        # Build visualization marker
         marker = Marker()
         marker.header.frame_id = msg.header.frame_id
         marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = "road_squares"
+        marker.ns = "bfs_squares"
         marker.id = 0
         marker.type = Marker.CUBE_LIST
         marker.action = Marker.ADD
 
-        marker.scale.x = square_size
-        marker.scale.y = square_size
-        marker.scale.z = 0.05   # thin "tile"
+        marker.scale.x = self.square_size
+        marker.scale.y = self.square_size
+        marker.scale.z = 0.05
         marker.color.r = 0.0
         marker.color.g = 1.0
         marker.color.b = 0.0
-        marker.color.a = 0.5    # transparency
+        marker.color.a = 0.5
 
-        for gx, gy in grid:
+        for gx, gy in connected:
             p = Point()
-            p.x = gx * square_size + half_size
-            p.y = gy * square_size + half_size
+            p.x = gx * self.square_size + self.half_size
+            p.y = gy * self.square_size + self.half_size
             p.z = 0.0
             marker.points.append(p)
 
