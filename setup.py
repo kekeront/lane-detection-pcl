@@ -17,8 +17,8 @@ setup(
     zip_safe=True,
     maintainer='altairzhambyl',
     maintainer_email='altairzhambyl@gmail.com',
-    description='TODO: Package description',
-    license='TODO: License declaration',
+    description='Road surface segmentation and lane boundary detection from LiDAR point clouds using ROS 2',
+    license='GPL-3.0',
     tests_require=['pytest'],
     entry_points={
     'console_scripts': [
