@@ -2,12 +2,18 @@
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)
 ![NumPy](https://img.shields.io/badge/NumPy-scientific-013243?logo=numpy&logoColor=white)
 ![SciPy](https://img.shields.io/badge/SciPy-splines-8CAAE6?logo=scipy&logoColor=white)
+![TensorFlow](https://img.shields.io/badge/TensorFlow-U--Net-FF6F00?logo=tensorflow&logoColor=white)
+![OpenCV](https://img.shields.io/badge/OpenCV-4.x-5C3EE8?logo=opencv&logoColor=white)
 ![License](https://img.shields.io/badge/License-GPLv3-green?logo=gnu&logoColor=white)
 ![PCL](https://img.shields.io/badge/LiDAR-PointCloud2-orange)
 
 # Lane Detection PCL
 
-**Real-time road surface segmentation and lane boundary detection from LiDAR point clouds** — with four path-planning algorithms running on the detected road grid, all visualized in RViz2.
+**Real-time road surface segmentation and lane boundary detection using both LiDAR point clouds and Computer Vision** — with four path-planning algorithms running on the detected road grid, all visualized in RViz2.
+
+Two detection pipelines in one repo:
+- **LiDAR (PCL)** — ground-plane segmentation + grid-based path planning in ROS 2
+- **Computer Vision** — U-Net road segmentation trained on camera feeds, with contour-based boundary extraction
 
 ---
 
@@ -17,20 +23,46 @@ Autonomous vehicles need to understand road geometry in real time. Camera-based 
 
 ## Solution
 
-This ROS 2 package (`ransac_seg`) takes raw `PointCloud2` data from a front-facing LiDAR and:
+**LiDAR pipeline** — ROS 2 package (`ransac_seg`) takes raw `PointCloud2` data from a front-facing LiDAR and:
 
 1. **Segments the road surface** using ground-plane filtering (RANSAC-ready interface)
 2. **Fits smooth spline curves** to left and right lane boundaries
 3. **Runs 4 path-planning algorithms** (A\*, BFS, DFS, Dijkstra) on the discretized road grid
 4. **Publishes everything as RViz markers** for immediate visual feedback
 
-All nodes subscribe to the same LiDAR topic and can run independently or together via a single launch file.
+**Computer Vision pipeline** — processes camera images to:
+
+1. **Compares 4 classical detection methods** (Crop & Stretch, Canny + Hough, Adaptive Threshold, Otsu)
+2. **Trains a U-Net** with Dice + BCE combined loss for road segmentation
+3. **Extracts left/right track boundaries** via contour analysis on U-Net predictions
+4. **Evaluates quantitatively** with Dice, IoU, Hausdorff distance metrics
 
 ---
 
 ## Demo
 
-### Road Surface Grid + Camera Feed
+### Computer Vision Pipeline
+
+#### Detection Methods Comparison
+> 4 classical CV methods evaluated on middle-strip ROI: Crop & Stretch, Canny + Hough, Adaptive Threshold, Otsu.
+
+![Detection Methods](docs/screenshots/cv_detection_methods_cell5_0.png)
+
+#### U-Net Boundary Extraction
+> Input camera image → U-Net predicted mask → Track boundaries (RED = left, BLUE = right, GREEN = drivable zone).
+
+![Boundary Extraction](docs/screenshots/cv_boundary_extraction_cell16_0.png)
+
+#### Training & Evaluation
+> U-Net training curves (Loss, Dice, IoU) and validation accuracy metrics (confusion matrix, Dice/IoU distributions, Hausdorff distance).
+
+| Training History | Accuracy Metrics |
+|:---:|:---:|
+| ![Training](docs/screenshots/cv_training_cell13_10.png) | ![Accuracy](docs/screenshots/cv_accuracy_eval_cell15_1.png) |
+
+### LiDAR Pipeline
+
+#### Road Surface Grid + Camera Feed
 > Green grid tiles overlay the detected road surface. Front camera feed shown top-right for reference.
 
 ![Road Grid](docs/screenshots/road_grid.png)
@@ -72,37 +104,51 @@ Then open **RViz2** and add Marker displays for `/semantic_map/squares`, `/seman
 ## Architecture
 
 ```
-LiDAR PointCloud2
-       │
-       ▼
- ┌─────────────┐
- │ ransac_node  │──► Road grid (CUBE_LIST markers)
- └──────┬───────┘
-        │
-   ┌────┴────┐
-   ▼         ▼
-┌───────┐ ┌──────────────┐
-│ curve │ │ Path Planners│
-│       │ │ A* / BFS /   │
-│ Lane  │ │ DFS/Dijkstra │
-│ spline│ │              │
-└───┬───┘ └──────┬───────┘
-    │            │
-    ▼            ▼
-   RViz2 Visualization
+┌─────────────────────────────────────────────────────────────┐
+│                    SENSOR INPUTS                            │
+│  LiDAR PointCloud2           Camera Images                  │
+└──────┬───────────────────────────┬──────────────────────────┘
+       │                           │
+       ▼                           ▼
+ ┌─────────────┐           ┌──────────────────┐
+ │ ransac_node  │           │ Classical CV      │
+ │ Ground-plane │           │ Canny/Hough/Otsu  │
+ │ filter       │           │ Middle-strip ROI  │
+ └──────┬───────┘           └────────┬─────────┘
+        │                            │ training masks
+   ┌────┴────┐                       ▼
+   ▼         ▼               ┌──────────────┐
+┌───────┐ ┌──────────┐       │ U-Net        │
+│ curve │ │ Path     │       │ Dice+BCE loss│
+│ Lane  │ │ Planners │       │ Mixed FP16   │
+│ spline│ │ A*/BFS/  │       └──────┬───────┘
+└───┬───┘ │ DFS/Dijk │              │
+    │     └────┬─────┘              ▼
+    ▼          ▼             ┌──────────────┐
+  RViz2 Visualization       │ Boundary     │
+                             │ Extraction   │
+                             │ L/R contours │
+                             └──────────────┘
 ```
 
-> Full architecture details: [`docs/architecture.md`](docs/architecture.md)
+> Full LiDAR architecture: [`docs/architecture.md`](docs/architecture.md)
 
 ---
 
 ## Key Features
 
+### LiDAR (ROS 2)
 - **Ground-plane segmentation** — Z-axis filter with a clean interface for swapping in RANSAC
 - **Spline lane boundaries** — `scipy.interpolate.UnivariateSpline` fits smooth left/right curves
 - **4 path planners** — A\* (heuristic), BFS (shortest), DFS (exploratory), Dijkstra (uniform-cost)
 - **Grid discretization** — continuous point cloud → 0.5m cells, shared across all nodes
 - **Single launch file** — `ros2 launch ransac_seg algorithms.launch.py` starts everything
+
+### Computer Vision
+- **4 classical detection methods** — compared side-by-side on middle-strip ROI
+- **U-Net segmentation** — trained with Dice + BCE combined loss, mixed-precision (FP16)
+- **Contour-based boundary extraction** — left/right edge + drivable zone from predicted masks
+- **Quantitative evaluation** — Dice, IoU, Hausdorff distance, confusion matrix on validation set
 
 ---
 
@@ -128,17 +174,20 @@ LiDAR PointCloud2
 
 ```
 lane-detection-pcl/
-├── ransac_seg/
-│   ├── ransac_node.py          # Core road segmentation node
-│   ├── curve.py                # Lane boundary spline fitting
-│   ├── astar.py                # A* path planning
-│   ├── bfs.py                  # BFS path planning
-│   ├── dfs.py                  # DFS path planning
-│   └── djikstra.py             # Dijkstra path planning
+├── ransac_seg/                          # ROS 2 LiDAR pipeline
+│   ├── ransac_node.py                   # Core road segmentation node
+│   ├── curve.py                         # Lane boundary spline fitting
+│   ├── astar.py                         # A* path planning
+│   ├── bfs.py                           # BFS path planning
+│   ├── dfs.py                           # DFS path planning
+│   └── djikstra.py                      # Dijkstra path planning
+├── track_boundary_detection_clean.ipynb  # CV pipeline (U-Net + classical)
+├── checkpoint.ipynb                      # CV baseline experiments
 ├── launch/
-│   └── algorithms.launch.py    # Launch all nodes
+│   └── algorithms.launch.py             # Launch all ROS 2 nodes
 ├── docs/
-│   └── architecture.md         # Detailed architecture
+│   ├── architecture.md                  # LiDAR pipeline architecture
+│   └── screenshots/                     # Demo visualizations
 ├── package.xml
 ├── setup.py
 └── setup.cfg
@@ -153,8 +202,10 @@ lane-detection-pcl/
 | Middleware | ROS 2 (ament_python) |
 | Language | Python 3.10+ |
 | Point Cloud | sensor_msgs_py / PointCloud2 |
+| Deep Learning | TensorFlow / Keras (U-Net) |
+| Classical CV | OpenCV (Canny, Hough, Otsu) |
 | Math | NumPy, SciPy |
-| Visualization | RViz2 Markers |
+| Visualization | RViz2 / Foxglove / Matplotlib |
 
 ---
 
